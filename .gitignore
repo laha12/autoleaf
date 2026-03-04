@@ -1,0 +1,16 @@
+dataset/
+trained_models/
+__MACOSX/
+# leafsnap-dataset-images.csv
+leafsnap-dataset-images.txt
+leafsnap-dataset-readme.txt
+.ipynb_checkpoints/
+*.h5
+*.json
+*.pem
+leafsnap-dataset-train-images.csv
+leafsnap-dataset-test-images.csv
+*.pyc
+*.tar
+*.pth
+*.csv
