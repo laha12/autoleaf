@@ -10,6 +10,8 @@ from torchvision.models import ResNet50_Weights
 import numpy as np
 from torch.utils.data import Subset, DataLoader
 import argparse
+import sys
+from pathlib import Path
 
 # -------------------------- 核心优化1：常量与参数更规范 --------------------------
 parser = argparse.ArgumentParser(description='ResNet50 + Softmax Training (No CBAM)')
@@ -17,7 +19,7 @@ parser = argparse.ArgumentParser(description='ResNet50 + Softmax Training (No CB
 parser.add_argument('--input_size', type=int, default=224, help='Input image size (default: 224)')
 parser.add_argument('--batch_size', type=int, default=32, help='Batch size (default: 32)')
 parser.add_argument('--epochs_stage1', type=int, default=10, help='Epochs for stage1 (only FC layer)')
-parser.add_argument('--epochs_stage2', type=int, default=20, help='Epochs for stage2 (all layers)')  # 还原20轮
+parser.add_argument('--epochs_stage2', type=int, default=25, help='Epochs for stage2 (all layers)')  # 还原20轮
 parser.add_argument('--lr_stage1', type=float, default=0.001, help='Learning rate for stage1 (default: 0.001)')
 parser.add_argument('--lr_stage2', type=float, default=0.0001, help='Learning rate for stage2 (default: 0.0001)')
 # Adam优化器专属参数
@@ -172,7 +174,7 @@ def train_stage(model, train_loader, val_loader, criterion, optimizer, num_epoch
         patience=1,
         min_lr=1e-6
     )
-    
+
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
@@ -274,9 +276,35 @@ def build_resnet50(num_classes, pretrained=True):
     model.fc = nn.Linear(in_features, num_classes)  # 移除额外的全连接层和Dropout
     model = model.to(DEVICE)
     return model
-
+    
+def setup_logger(log_dir="logs"):
+    # 创建logs目录（不存在则创建）
+    log_path = Path(log_dir)
+    log_path.mkdir(exist_ok=True)
+    # 日志文件名（按时间命名，避免覆盖）
+    log_file = log_path / f"train_log_{time.strftime('%Y%m%d_%H%M%S')}.txt"
+    # 重定向stdout到文件（同时打印到控制台和文件）
+    class Logger:
+        def __init__(self, file_path):
+            self.console = sys.stdout
+            self.file = open(file_path, 'w', encoding='utf-8')
+        def write(self, message):
+            self.console.write(message)
+            self.file.write(message)
+            self.file.flush()
+        def flush(self):
+            self.console.flush()
+            self.file.flush()
+    sys.stdout = Logger(log_file)
+    print(f"[INFO] Log will be saved to {log_file}")
+    for arg in vars(args):
+        print(f"  {arg}: {getattr(args, arg)}")
 # -------------------------- 核心优化6：主函数（还原第一次的训练逻辑） --------------------------
 def main():
+
+    # 设置日志记录
+    setup_logger()
+
     # 1. 数据加载
     train_loader, val_loader = get_data_loaders()
     if train_loader is None or val_loader is None:
