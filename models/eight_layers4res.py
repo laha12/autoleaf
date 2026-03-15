@@ -1,49 +1,80 @@
-import torch.nn as nn
+from torch import nn
 
 class CustomMLP(nn.Module):
-    def __init__(self, num_classes=185, resnet_feature_dim=2048):
+    def __init__(self, num_classes=185):
         super(CustomMLP, self).__init__()
         
-        # 适配ResNet 2048维输入的8层结构设计（全连接层替代卷积层）
-        # 层1: 2048 -> 1024
-        self.fc1 = nn.Linear(resnet_feature_dim, 1024)
+        # 核心修正：2048维特征 → 8×16×16的2D特征图（8通道，16×16）
+        # 验证：8 * 16 * 16 = 2048，维度完全匹配
+        self.feature_reshape = lambda x: x.view(-1, 8, 16, 16)
+        
+        # 1. C1: 卷积层（适配 8×16×16 输入，输出 8×8）
+        # 计算验证：输出尺寸 = floor((16 + 2*4 - 7)/2) +1 = floor(17/2)+1=8+1？→ 调整为 kernel=7, stride=2, padding=3
+        # 最终：(16 + 2*3 -7)/2 +1 = (15)/2 +1=7+1=8 → 输出 8×8
+        self.conv1 = nn.Conv2d(8, 32, kernel_size=7, stride=2, padding=3)  # 替换原11/4/2，保证输出8×8
         self.relu1 = nn.ReLU(inplace=True)
-        # 层2: 局部响应归一化（适配一维特征，用nn.LayerNorm替代原LRN）
-        self.norm1 = nn.LayerNorm(1024)
-        # 层3: Dropout（子采样/正则化）
-        self.drop1 = nn.Dropout(p=0.2)
         
-        # 层4: 1024 -> 512
-        self.fc2 = nn.Linear(1024, 512)
+        # 2. L2: 局部对比度归一化层（保留原参数）
+        self.lrn1 = nn.LocalResponseNorm(size=5, alpha=0.0001, beta=0.75, k=1.0)
+
+        # 3. S3: 子采样层 (MaxPooling) → 8×8 → 4×4（kernel=2, stride=2）
+        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
+        
+        # 4. C4: 卷积层 - 4×4 → 4×4（padding=2 适配kernel=5，尺寸不变）
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=5, padding=2)
         self.relu2 = nn.ReLU(inplace=True)
-        # 层5: 归一化
-        self.norm2 = nn.LayerNorm(512)
-        # 层6: Dropout（子采样/正则化）
-        self.drop2 = nn.Dropout(p=0.2)
         
-        # 层7: 512 -> 1024（特征映射回目标维度）
-        self.fc3 = nn.Linear(512, 1024)
+        # 5. L5: 局部对比度归一化层（保留原参数）
+        self.lrn2 = nn.LocalResponseNorm(size=5, alpha=0.0001, beta=0.75, k=1.0)
+        
+        # 6. S6: 子采样层 (MaxPooling) → 4×4 → 2×2（kernel=2, stride=2）
+        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
+        
+        # 展平维度: 64通道 * 2 * 2 = 256（修正原1×1的错误）
+        self.flatten_dim = 64 * 2 * 2 
+        
+        # 7. F7: 全连接层（适配新的展平维度256）
+        self.fc1 = nn.Linear(self.flatten_dim, 1024)
         self.relu3 = nn.ReLU(inplace=True)
-        self.drop3 = nn.Dropout(p=0.5)
+        self.dropout = nn.Dropout(p=0.5)
         
-        # 层8: 分类输出层（最终分类头）
+        # 8. F8: 分类输出层（保留原参数）
         self.classifier = nn.Linear(1024, num_classes)
 
     def forward(self, x):
-        # 输入x: (batch, 2048) （ResNet提取的一维特征）
-        # Layer 1-3
-        x = self.drop1(self.norm1(self.relu1(self.fc1(x))))
-        # Layer 4-6
-        x = self.drop2(self.norm2(self.relu2(self.fc2(x))))
-        # Layer 7
-        x = self.drop3(self.relu3(self.fc3(x)))
+        # Step1: 2048维一维特征 → 8×16×16的2D特征图
+        x = self.feature_reshape(x)  # 输出 shape: [batch_size, 8, 16, 16]
         
-        # 最终特征（维度: batch, 1024），可用于SVM
+        # Layer 1-3: C1 -> L2 -> S3 → 8×16×16 → 32×8×8 → 32×4×4
+        x = self.pool1(self.lrn1(self.relu1(self.conv1(x))))
+        
+        # Layer 4-6: C4 -> L5 -> S6 → 32×4×4 → 64×4×4 → 64×2×2
+        x = self.pool2(self.lrn2(self.relu2(self.conv2(x))))
+        
+        # Flatten → [batch_size, 64*2*2=256]
+        x = x.view(x.size(0), -1)
+        
+        # Layer 7: F7 + Dropout → 256 → 1024
+        x = self.dropout(self.relu3(self.fc1(x)))
+        
+        # 用于 SVM 的特征向量
         features = x
-        # Layer 8: 分类输出
+        
+        # Layer 8: F8 输出 → 1024 → num_classes
         out = self.classifier(x)
         
         return out, features
 
-def custom_mlp(num_classes=185):
-    return CustomMLP(num_classes=num_classes)
+# 验证维度是否匹配
+if __name__ == "__main__":
+    import torch
+    # 构造2048维输入（batch_size=2，模拟ResNet输出）
+    input_feat = torch.randn(2, 2048)
+    model = CustomMLP(num_classes=185)
+    out, features = model(input_feat)
+    # print("输入特征维度:", input_feat.shape)       # torch.Size([2, 2048])
+    # print("C1层输出维度:", model.relu1(model.conv1(model.feature_reshape(input_feat))).shape)  # torch.Size([2, 32, 8, 8])
+    # print("S3层输出维度:", model.pool1(model.lrn1(model.relu1(model.conv1(model.feature_reshape(input_feat))))).shape)  # torch.Size([2, 32, 4, 4])
+    # print("S6层输出维度:", model.pool2(model.lrn2(model.relu2(model.conv2(model.pool1(model.lrn1(model.relu1(model.conv1(model.feature_reshape(input_feat)))))))).shape)  # torch.Size([2, 64, 2, 2])
+    # print("最终输出维度:", out.shape)               # torch.Size([2, 185])
+    # print("特征向量维度:", features.shape)         # torch.Size([2, 1024])

@@ -1,11 +1,10 @@
 import gradio as gr
 import torch
 import torch.nn.functional as F
-from torchvision import transforms
+from torchvision import transforms, models
 from PIL import Image
 import numpy as np
 import cv2
-from models.custom_cnn import custom_cnn
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from pytorch_grad_cam.utils.image import show_cam_on_image
@@ -13,10 +12,10 @@ import os
 from pathlib import Path
 
 # --- 1. 配置与模型加载 ---
-NUM_CLASSES = 185
-INPUT_SIZE = 32
-MODEL_PATH = "leaf_model_softmax.pth"
-TRAIN_DIR = Path("dataset/train")
+NUM_CLASSES = 185  # 保持和你训练ResNet50时的类别数一致
+INPUT_SIZE = 224   # ResNet50默认输入尺寸
+MODEL_PATH = "results/resnet50_no_cbam_stage2_best_acc_91.pth"  # 你的ResNet50权重文件路径
+TRAIN_DIR = Path("dataset/images/field")
 
 # 获取类别列表 (确保顺序与训练时一致)
 if TRAIN_DIR.exists():
@@ -24,22 +23,44 @@ if TRAIN_DIR.exists():
 else:
     classes = [f"Species {i}" for i in range(NUM_CLASSES)]
 
-# 加载模型
+# 加载ResNet50模型并替换最后一层
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = custom_cnn(num_classes=NUM_CLASSES)
+model = models.resnet50(weights=None)  # 不加载预训练权重
+# 修改全连接层以匹配你的类别数
+model.fc = torch.nn.Linear(model.fc.in_features, NUM_CLASSES)
+
+# 加载训练好的权重
 if os.path.exists(MODEL_PATH):
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
-    print(f"成功加载模型: {MODEL_PATH}")
+    checkpoint = torch.load(MODEL_PATH, map_location=device)
+    # 兼容两种权重格式：带/不带module.前缀（多卡训练）
+    if "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
+    else:
+        state_dict = checkpoint
+    
+    # 移除module.前缀（如果有）
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        if k.startswith("module."):
+            new_state_dict[k[7:]] = v
+        else:
+            new_state_dict[k] = v
+    
+    model.load_state_dict(new_state_dict,strict = False)
+    print(f"成功加载ResNet50模型: {MODEL_PATH}")
 else:
     print(f"警告: 找不到模型文件 {MODEL_PATH}，将使用随机初始化权重。")
 model.to(device)
 model.eval()
 
-# 预处理转换
+# 预处理转换 (适配ResNet50的标准预处理)
 transform = transforms.Compose([
     transforms.Resize((INPUT_SIZE, INPUT_SIZE)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],  # ImageNet均值
+        std=[0.229, 0.224, 0.225]    # ImageNet标准差
+    )
 ])
 
 # --- 2. 预测函数 ---
@@ -53,37 +74,27 @@ def predict(input_img):
     
     # 推理
     with torch.no_grad():
-        outputs, features = model(input_tensor)
+        outputs = model(input_tensor)  # ResNet50只有输出，无单独features
         probs = F.softmax(outputs, dim=1)[0]
     
     # 获取前 5 个结果
     top5_prob, top5_catid = torch.topk(probs, 5)
     results = {classes[top5_catid[i]]: float(top5_prob[i]) for i in range(5)}
     
-    # --- Grad-CAM 可视化 ---
-    # 定义目标层 (通常是最后一个卷积层)
-    target_layers = [model.conv2]
+    # --- Grad-CAM 可视化 (适配ResNet50的目标层) ---
+    # ResNet50的最后一个卷积层是layer4[-1]
+    target_layers = [model.layer4[-1]]
     
-    # GradCAM 包装器需要 forward 返回 logits
-    class ModelWrapper(torch.nn.Module):
-        def __init__(self, model):
-            super().__init__()
-            self.model = model
-        def forward(self, x):
-            out, _ = self.model(x)
-            return out
-            
-    wrapped_model = ModelWrapper(model)
-    cam = GradCAM(model=wrapped_model, target_layers=target_layers)
+    # GradCAM 包装器 (ResNet50 forward直接返回logits)
+    cam = GradCAM(model=model, target_layers=target_layers)
     
     # 生成热力图
     targets = [ClassifierOutputTarget(top5_catid[0].item())]
     grayscale_cam = cam(input_tensor=input_tensor, targets=targets)
     grayscale_cam = grayscale_cam[0, :]
     
-    # 将热力图叠加到原图上
-    # 需要先将输入图缩放到模型输入大小 32x32 或保持原图比例
-    img_float = np.float32(img_pil.resize((224, 224))) / 255 # 为了可视化效果，我们放大到 224
+    # 将热力图叠加到原图上 (保持224x224可视化尺寸)
+    img_float = np.float32(img_pil.resize((224, 224))) / 255
     grayscale_cam_resized = cv2.resize(grayscale_cam, (224, 224))
     cam_image = show_cam_on_image(img_float, grayscale_cam_resized, use_rgb=True)
     
@@ -92,7 +103,7 @@ def predict(input_img):
 # --- 3. Gradio 界面 ---
 with gr.Blocks(title="叶片识别系统", theme=gr.themes.Soft()) as iface:
     gr.Markdown("# 🌿 叶片识别系统")
-    gr.Markdown("上传叶片图像以分类其物种。该模型使用复现论文的 8 层 CNN 架构，输入分辨率为 32x32。")
+    gr.Markdown("上传叶片图像以分类其物种。该模型使用 ResNet50 架构，输入分辨率为 224x224。")
     
     with gr.Row():
         with gr.Column():

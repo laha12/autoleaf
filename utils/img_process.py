@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import pandas as pd
-import random
+import torch
 from ultralytics import YOLO
 from pathlib import Path
 from skimage import io

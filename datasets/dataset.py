@@ -1,10 +1,7 @@
 import cv2
-import numpy as np
 import pandas as pd
-import utils
-
+from utils.img_process import load_image_and_preprocess
 from pathlib import Path
-from PIL import Image
 from sklearn.model_selection import train_test_split
 
 # GLOBAL CONSTANTS
@@ -54,7 +51,7 @@ def save_images(images, species, directory='train', csv_name='temp.csv'):
     base_write_dir.mkdir(parents=True, exist_ok=True)
 
     for index in range(len(images['original'])):
-        image = utils.load_image_and_preprocess(images['original'][index], images['segmented'][index])
+        image = load_image_and_preprocess(images['original'][index], images['segmented'][index])
         if image is not None:
             specie_dir = base_write_dir / species[index].lower().replace(' ', '_')
             specie_dir.mkdir(parents=True, exist_ok=True)
