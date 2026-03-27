@@ -5,6 +5,10 @@ __MACOSX/
 # leafsnap-dataset-images.csv
 leafsnap-dataset-images.txt
 leafsnap-dataset-readme.txt
+毕设文档.md
+logs/
+pretrained_models/
+results/
 .ipynb_checkpoints/
 *.h5
 *.json
