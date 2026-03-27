@@ -1,0 +1,26 @@
+dataset/
+├── single_bg/          # leafsnap单一背景数据（原流程输出）
+│   ├── raw/
+│   │   ├── images/          # leafsnap单一背景数据
+│   │   └── segmented/       # leafsnap单一背景分割数据    
+│   ├── processed/
+│   │   ├── train/          # 单一背景train数据集
+│   │   ├── val/            # 单一背景val数据集
+│   │   └── test/           # 单一背景test数据集
+├── complex_bg/         # 自建复杂背景数据
+│   ├── raw/            # 原始拍摄图片（按类别分目录）
+│   │   ├── class_A/    # 自建类别A（80张）
+│   │   ├── class_B/    # 自建类别B（80张）
+│   │   ├── ...
+│   ├── processed/      # 预处理后（ROI提取+resize）
+│   │   ├── train/
+│   │   ├── val/
+│   │   └── test/
+└── csv/                # 所有数据的标签文件
+    ├── single_bg_train.csv   # 原leafsnap train标签
+    ├── single_bg_val.csv     # 原leafsnap val标签
+    ├── single_bg_test.csv    # 原leafsnap test标签
+    ├── complex_bg_train.csv  # 自建复杂背景train标签
+    ├── complex_bg_val.csv    # 自建复杂背景val标签
+    ├── complex_bg_test.csv   # 自建复杂背景test标签
+    └── combined_labels.csv   # 合并单一/复杂背景的标签（含类别映射）

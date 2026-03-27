@@ -20,7 +20,7 @@ def setup_logger(cfg,log_dir="logs"):
     log_path = Path(log_dir)
     log_path.mkdir(exist_ok=True)
     # 日志文件名（按时间命名，避免覆盖）
-    log_file = log_path / f"train_log_{time.strftime('%Y%m%d_%H%M%S')}.txt"
+    log_file = log_path / f"{cfg.logger.model_name}_train_log_{time.strftime('%Y%m%d_%H%M%S')}.txt"
     # 重定向stdout到文件（同时打印到控制台和文件）
     sys.stdout = Logger(log_file)
     print(f"[INFO] Log will be saved to {log_file}")

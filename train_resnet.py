@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import time  # 新增：用于生成时间戳文件名
-from pathlib import Path  # 修正：Pathlib→pathlib，impot→import
+import time  
+from pathlib import Path  
 from models.resnet50 import build_resnet50
 from datasets.dataloader import get_data_loaders
 from engine.trainer import train_stage
@@ -31,7 +31,7 @@ def main():
     model = build_resnet50(cfg.model.num_classes).to(DEVICE)
     
     # 损失函数（交叉熵损失，适配分类任务）
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
     # ===================== Stage1：仅训练全连接层 =====================
     # 冻结除fc层外的所有参数

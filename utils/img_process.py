@@ -6,70 +6,51 @@ from ultralytics import YOLO
 from pathlib import Path
 from skimage import io
 
-# 全局加载一次 YOLO 模型，避免重复加载
+# 全局加载一次 YOLO 模型，避免重复加载 单例实现
 _yolo_model = None
 
 def get_yolo_model():
     global _yolo_model
     if _yolo_model is None:
         try:
-            _yolo_model = YOLO('yolov8n-seg.pt')
+            _yolo_model = YOLO('../yolov8n.pt')
         except Exception as e:
             print(f"[WARNING] 加载 YOLO 模型失败: {e}")
     return _yolo_model
 
 def hybrid_roi_extraction(image_rgb, image_path=None):
-    """
-    混合 ROI 提取逻辑：
-    """
+    """处理复杂背景、无segment的图片，提取ROI"""
     h, w = image_rgb.shape[:2]
-    
-    # 尝试 YOLO
-    model = get_yolo_model()
-    if model is not None:
-        try:
-            # 如果提供了路径，直接用路径推理（更快）；否则用内存图像
-            source = image_path if image_path else image_rgb
-            results = model(source, conf=0.25, verbose=False)
+    # 因为主要是做识别 所以目标检测这里先简化处理
+    # # 尝试 YOLO
+    # model = get_yolo_model()
+    # if model is not None:
+    #     try:
+    #         # 如果提供了路径，直接用路径推理（更快）；否则用内存图像
+    #         source = image_path if image_path else image_rgb
+    #         results = model(source, conf=0.25, verbose=False)
             
-            if results[0].masks is not None and len(results[0].masks) > 0:
-                mask = results[0].masks.data[0].cpu().numpy()
-                mask = cv2.resize(mask, (w, h))
-                mask_binary = (mask > 0.5).astype(np.uint8) * 255
+    #         if results[0].masks is not None and len(results[0].masks) > 0:
+    #             mask = results[0].masks.data[0].cpu().numpy()
+    #             mask = cv2.resize(mask, (w, h))
+    #             mask_binary = (mask > 0.5).astype(np.uint8) * 255
                 
-                # 抠图（背景变黑）
-                cutout = cv2.bitwise_and(image_rgb, image_rgb, mask=mask_binary)
+    #             # 抠图（背景变黑）
+    #             cutout = cv2.bitwise_and(image_rgb, image_rgb, mask=mask_binary)
                 
-                # 获取边界框并裁剪
-                box = results[0].boxes[0].xyxy[0].cpu().numpy()
-                x1, y1, x2, y2 = map(int, box)
-                pad = 20
-                roi = cutout[max(0, y1-pad):min(h, y2+pad), max(0, x1-pad):min(w, x2+pad)]
-                return roi
-        except Exception as e:
-            print(f"[DEBUG] YOLO 提取失败: {e}，将使用兜底方案")
+    #             # 获取边界框并裁剪
+    #             box = results[0].boxes[0].xyxy[0].cpu().numpy()
+    #             x1, y1, x2, y2 = map(int, box)
+    #             pad = 20
+    #             roi = cutout[max(0, y1-pad):min(h, y2+pad), max(0, x1-pad):min(w, x2+pad)]
+    #             return roi
+    #     except Exception as e:
+    #         print(f"[DEBUG] YOLO 提取失败: {e}，将使用兜底方案")
 
-    # 2. 兜底方案：1/6-5/6 比例裁剪
+    # 兜底方案：1/6-5/6 比例裁剪
     y1, x1 = int(h / 6), int(w / 6)
     y2, x2 = int(5 * h / 6), int(5 * w / 6)
     return image_rgb[y1:y2, x1:x2]
-
-def rotate(image, angle):
-    (h, w) = image.shape[:2]
-    # 计算旋转中心
-    (cX, cY) = (w // 2, h // 2)
-    # -表示顺时针旋转
-    M = cv2.getRotationMatrix2D((cX, cY), -angle, 1.0)
-    # 旋转矩阵中的余弦和正弦值
-    cos = np.abs(M[0, 0])
-    sin = np.abs(M[0, 1])
-    nW = int((h * sin) + (w * cos))
-    nH = int((h * cos) + (w * sin))
-    # 调整旋转矩阵的偏移量
-    M[0, 2] += (nW / 2) - cX
-    M[1, 2] += (nH / 2) - cY
-    return cv2.warpAffine(image, M, (nW, nH))
-
 
 def load_image_and_preprocess(path, segmented_path):
     """

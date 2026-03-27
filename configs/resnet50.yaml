@@ -11,6 +11,9 @@ train:
   epochs_stage1: 10
   epochs_stage2: 25
   grad_clip: 1.0
+  
+criterion:
+  label_smoothing: 0.15  
 
 optimizer:
   lr_stage1: 0.001

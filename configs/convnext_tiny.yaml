@@ -1,0 +1,53 @@
+# 数据集配置
+dataset:
+  input_size: 224
+  batch_size: 32
+  limit_train_per_class: 0
+  limit_val_per_class: 0
+
+# 模型配置
+model:
+  num_classes: 185
+  pretrained_weights: "./pretrain_weights/convnext_tiny_1k_224_ema.pth"
+
+# 优化器配置
+optimizer:
+  lr_stage1: 5e-4       
+  lr_stage2: 5e-5        
+  beta1: 0.9
+  beta2: 0.999
+  eps: 1e-8
+  weight_decay1: 5e-5    
+  weight_decay2: 2e-2    
+  
+# 损失函数
+criterion:
+  label_smoothing: 0.15  
+
+# 训练配置
+train:
+  epochs_stage1: 6       
+  epochs_stage2: 20      
+  warmup_epochs: 2       
+  grad_clip: 2.0
+
+# 早停配置
+early_stop:
+  patience: 2            
+  min_delta: 0.1         
+
+# 日志配置
+logger:
+  model_name: "convnext_tiny"
+
+# 调度器配置
+scheduler:
+  reduce:
+    mode: "max"
+    factor: 0.6          
+    patience: 1
+    min_lr: 1e-7        
+  cosin:
+    warmup_epochs: 2
+    warmup_lr_init: 5e-8 
+    min_lr: 1e-7

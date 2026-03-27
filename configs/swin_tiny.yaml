@@ -1,0 +1,51 @@
+dataset:
+  input_size: 224 
+  batch_size: 32   
+  limit_train_per_class: 0
+  limit_val_per_class: 0
+
+model:
+  model_name: "swin_tiny_patch4_window7_224"  # timm 中 Swin-Tiny 模型名
+  num_classes: 185  
+
+criterion:
+  label_smoothing: 0.12  
+
+optimizer:
+  beta1: 0.9  
+  beta2: 0.999  
+  eps: 1e-8  
+  
+  # 各阶段学习率（核心：渐进式降低）
+  lr_stage1: 1e-3  # Stage1（仅head）：高学习率
+  lr_stage2: 5e-4  # Stage2（head+norm+layers.3）：降低
+  lr_stage3: 1e-4  # Stage3（head+norm+layers.2/3）：再降低
+  lr_stage4: 5e-5  # Stage4（全量）：最低学习率
+  
+  # 各阶段权重衰减（核心：全量训练时增大，防止过拟合）
+  weight_decay1: 0.0  # Stage1（仅head）：无权重衰减
+  weight_decay2: 1e-4 # Stage2：轻量衰减
+  weight_decay3: 1e-4 # Stage3：同Stage2
+  weight_decay4: 5e-2 # Stage4（全量）：Swin推荐高权重衰减（5e-2）
+
+
+scheduler:
+  cosine:
+    warmup_epochs: 5  # 预热epoch数（建议5~10）
+    warmup_lr_init: 1e-6  # 预热初始学习率（远低于阶段基础LR）
+    min_lr: 1e-7  # 学习率下限（防止LR过低导致训练停滞）
+
+# ===================== 训练配置 =====================
+train:
+  epochs_stage1: 8   # Stage1 epoch数（仅head：少epochs）
+  epochs_stage2: 12  # Stage2 epoch数（浅层：中等epochs）
+  epochs_stage3: 15  # Stage3 epoch数（中浅层：多一点）
+  epochs_stage4: 25  # Stage4 epoch数（全量：最多epochs）
+  grad_clip: 1.0     # 梯度裁剪（防止梯度爆炸，建议0.5~1.0）
+
+early_stop:
+  patience: 3            
+  min_delta: 0.1
+
+logger:
+  model_name: "swin_tiny"
