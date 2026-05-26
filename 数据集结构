@@ -9,8 +9,8 @@ dataset/
 │   │   └── test/           # 单一背景test数据集
 ├── complex_bg/         # 自建复杂背景数据
 │   ├── raw/            # 原始拍摄图片（按类别分目录）
-│   │   ├── class_A/    # 自建类别A（80张）
-│   │   ├── class_B/    # 自建类别B（80张）
+│   │   ├── class_A/    # 自建类别A
+│   │   ├── class_B/    # 自建类别B
 │   │   ├── ...
 │   ├── processed/      # 预处理后（ROI提取+resize）
 │   │   ├── train/

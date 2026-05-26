@@ -5,7 +5,7 @@ from pathlib import Path
 from sklearn.model_selection import train_test_split
 
 # GLOBAL CONSTANTS
-DATA_FILE = "C:\\Users\\86185\\Desktop\\Deep-Leafsnap\\dataset\\single_bg\\raw\\leafsnap-dataset-images.csv"
+DATA_FILE = "dataset/single_bg/raw/leafsnap-dataset-images.csv"
 NUM_CLASSES = 185
 bad_lab_species = {'Abies concolor', 'Abies nordmanniana', 'Picea pungens', 'Picea orientalis',
                    'Picea abies', 'Cedrus libani', 'Cedrus atlantica', 'Cedrus deodara',
@@ -22,8 +22,7 @@ for i in range(len(data)):
         bad_indices.append(i)
 data.drop(data.index[bad_indices], inplace=True)
 
-# ===================== 核心修改：拆分训练/验证/测试集 =====================
-# 第一步：先拆分出测试集（20%），剩余80%为训练+验证集（保持类别分布）
+
 train_val_df, test_df = train_test_split(
     data, 
     test_size=0.20,       
@@ -31,7 +30,7 @@ train_val_df, test_df = train_test_split(
     stratify=data['species']  
 )
 
-# 第二步：从训练+验证集中拆分出验证集
+
 train_df, val_df = train_test_split(
     train_val_df, 
     test_size=0.25,       # 验证集占训练+验证集的25%
@@ -39,7 +38,7 @@ train_df, val_df = train_test_split(
     stratify=train_val_df['species']  # 继续分层
 )
 
-# ===================== 构造各数据集的图像/标签列表 =====================
+
 # 训练集
 images_train_original = train_df['image_path'].tolist()
 images_train_segmented = train_df['segmented_path'].tolist()
@@ -113,10 +112,10 @@ def save_images(images, species, directory='train', csv_name='temp.csv'):
     df.to_csv(csv_path / csv_name, index=False)  # 新增index=False，避免多余索引列
 
 # 分别处理训练/验证/测试集
-# save_images(images_train, species_train, directory='train',
-#             csv_name='leafsnap-dataset-train-images.csv')
-# save_images(images_val, species_val, directory='val',  # 验证集目录为val
-#             csv_name='leafsnap-dataset-val-images.csv')
+save_images(images_train, species_train, directory='train',
+            csv_name='leafsnap-dataset-train-images.csv')
+save_images(images_val, species_val, directory='val',  # 验证集目录为val
+            csv_name='leafsnap-dataset-val-images.csv')
 save_images(images_test, species_test, directory='test',
             csv_name='leafsnap-dataset-test-images.csv')
 

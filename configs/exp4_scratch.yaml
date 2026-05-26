@@ -1,0 +1,43 @@
+# 实验4：从头训练ResNet50配置
+
+dataset:
+  input_size: 224
+  batch_size: 48
+  limit_train_per_class: 0
+  limit_val_per_class: 0
+
+model:
+  num_classes: 185
+
+train:
+  epochs_stage1: 15  
+  epochs_stage2: 30
+  grad_clip: 0.8
+
+criterion:
+  label_smoothing: 0.18
+
+optimizer:
+  lr_stage1: 0.001  
+  lr_stage2: 5e-5
+  beta1: 0.9
+  beta2: 0.999
+  eps: 1e-8
+  weight_decay: 0.018
+
+early_stop:
+  patience: 5
+  min_delta: 0.002
+
+scheduler:
+  mode: "max"
+  factor: 0.5
+  patience: 2
+  min_lr: 5e-7
+  cosin:
+    warmup_epochs: 5
+    warmup_lr_init: 1e-7
+    min_lr: 1e-7
+
+logger:
+  model_name: "resnet50_scratch_exp4"

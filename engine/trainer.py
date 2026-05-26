@@ -4,6 +4,9 @@ from torch.cuda.amp import autocast
 from engine.evaluator import evaluate
 import time
 from torch.nn import utils
+import csv
+from pathlib import Path
+import copy
 
 
 def train_stage(
@@ -18,11 +21,21 @@ def train_stage(
         cfg,
         epochs,
         stage_name,
-        device
+        device,
+        metrics_csv_path=None
 ):
     best_acc = 0.0
-    best_state = model.state_dict()  # 初始化best_state为模型初始状态，避免None
+    best_state = copy.deepcopy(model.state_dict())
     patience_counter = 0
+
+    writer = None
+    csv_file = None
+    if metrics_csv_path:
+        csv_path = Path(metrics_csv_path)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        csv_file = open(csv_path, "w", newline="", encoding="utf-8")
+        writer = csv.writer(csv_file)
+        writer.writerow(["epoch", "train_loss", "train_acc", "val_loss", "val_acc", "lr"])
 
     for epoch in range(epochs):
         model.train()
@@ -70,7 +83,9 @@ def train_stage(
         train_acc = 100 * correct / total
         train_loss /= total  # 按总样本数平均，更准确
         # 验证阶段
-        val_loss, val_acc = evaluate(model, val_loader, criterion, device)
+        eval_result = evaluate(model, val_loader, criterion, device)
+        val_loss = eval_result["loss"]
+        val_acc = eval_result["top1_acc"]
         epoch_time = time.time() - epoch_start
 
         # 打印日志（修正格式）
@@ -80,7 +95,8 @@ def train_stage(
             f"TrainLoss {train_loss:.4f} | "
             f"TrainAcc {train_acc:.2f}% | "
             f"ValLoss {val_loss:.4f} | "
-            f"ValAcc {val_acc:.2f}%"
+            f"ValAcc {val_acc:.2f}% | "
+            f"ValTop5 {eval_result['top5_acc']:.2f}%"
         )
 
         # 基于val_acc的调度（如ReduceLROnPlateau）放epoch后
@@ -90,12 +106,14 @@ def train_stage(
         # 打印当前学习率
         current_lr = optimizer.param_groups[0]['lr']
         print(f'[INFO] Current {stage_name} learning rate: {current_lr:.6f}')
+        if writer is not None:
+            writer.writerow([epoch + 1, train_loss, train_acc, val_loss, val_acc, current_lr])
 
         # 早停逻辑（优化写法）
         if val_acc > best_acc + cfg.early_stop.min_delta:
             patience_counter = 0
             best_acc = val_acc
-            best_state = model.state_dict()  # 保存最佳权重
+            best_state = copy.deepcopy(model.state_dict())
             print(f"[INFO] Update best ValAcc: {best_acc:.2f}%")
         else:
             patience_counter += 1
@@ -107,4 +125,6 @@ def train_stage(
     # 加载最佳权重
     model.load_state_dict(best_state)
     print(f"[INFO] {stage_name} training done. Best ValAcc: {best_acc:.2f}%")
+    if csv_file is not None:
+        csv_file.close()
     return model

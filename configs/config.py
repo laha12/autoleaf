@@ -9,7 +9,7 @@ def _convert_str_to_num(value):
             return int(value)
         except ValueError:
             pass
-        # 处理浮点数（如 "1e-8"、"0.001" → 对应浮点数）
+        # 处理浮点数"1e-8"、"0.001" → 对应浮点数
         try:
             return float(value)
         except ValueError:
@@ -23,7 +23,7 @@ def _convert_str_to_num(value):
 
 class Config:
     def __init__(self, cfg_dict):
-        # 先对字典做全局类型转换（字符串数字→数值）
+        # 先对字典做全局类型转换
         converted_dict = _convert_str_to_num(cfg_dict)
         # 再递归转为Config对象
         for k, v in converted_dict.items():

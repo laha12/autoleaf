@@ -10,142 +10,276 @@ from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from pytorch_grad_cam.utils.image import show_cam_on_image
 import os
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.responses import JSONResponse
 import uvicorn
 from io import BytesIO
 import time
+import pandas as pd
+from ultralytics import YOLO
+from models.convnext import convnext_tiny
 
-# ===================== 1. 全局配置（用户需根据实际情况修改） =====================
-NUM_CLASSES = 185  # 所有模型保持相同类别数
+# ===================== 全局配置 =====================
 INPUT_SIZE = 224
-# 各模型权重路径（用户需替换为实际路径）
+
+# 模型权重路径配置（按场景和模型分类）
 MODEL_PATHS = {
-    "resnet50": "results/resnet50_no_cbam_stage2_best_acc_91.pth",
-    "swin_transformer": "results/swin_transformer_best.pth",
-    "convnext": "results/convnext_best.pth"
+    "simple_resnet50": "experiments/exp1_resnet50_single/20260422_075325/20260422_075325/checkpoints/resnet50_best_20260422_075329.pth",
+    "simple_convnext": "experiments/exp1_convnext_single/20260422_020821/20260422_020821/checkpoints/convnext_tiny_best_20260422_020829.pth",
+    "complex_resnet50": "experiments/exp2_resnet50_complex/20260427_160710/20260427_160710/checkpoints/resnet50_best_20260427_160720.pth",
+    "complex_convnext": "experiments/exp2_convnext_complex/20260427_160907/20260427_160907/checkpoints/convnext_tiny_best_20260427_160917.pth",
 }
-TRAIN_DIR = Path("dataset/images/field")
+
+# 类别配置
+CLASS_CONFIG = {
+    "simple": {
+        "num_classes": 185,
+        "train_dir": Path("dataset/images/field"),
+        "csv_path": Path("dataset/csv/leafsnap-dataset-test-images.csv"),
+    },
+    "complex": {
+        "num_classes": 9,
+        "train_dir": Path("dataset/complex_bg/center"),
+        "csv_path": Path("dataset/csv/complex_bg_raw_test.csv"),
+    }
+}
+
+# YOLOv8模型路径（用于ROI提取）
+YOLO_MODEL_PATH = "results/yolov8n_leaf_roi_best.pt"
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # 获取类别列表
-if TRAIN_DIR.exists():
-    CLASSES = sorted([d.name for d in TRAIN_DIR.iterdir() if d.is_dir()])
-else:
-    CLASSES = [f"Species {i}" for i in range(NUM_CLASSES)]
+def get_classes(scene_type: str):
+    config = CLASS_CONFIG[scene_type]
+    
+    # 优先从CSV文件读取类别名
+    csv_path = config.get("csv_path")
+    if csv_path and csv_path.exists():
+        df = pd.read_csv(csv_path)
+        if "species" in df.columns:
+            return sorted(df["species"].unique().tolist())
+    
+    # 其次从训练目录读取
+    train_dir = config.get("train_dir")
+    if train_dir and train_dir.exists():
+        return sorted([d.name for d in train_dir.iterdir() if d.is_dir()])
+    
+    # 最后使用默认类别名
+    num_classes = config["num_classes"]
+    return [f"Class_{i}" for i in range(num_classes)]
 
-# 图像预处理（适配所有模型的通用预处理）
+# 图像预处理
 TRANSFORM = transforms.Compose([
     transforms.Resize((INPUT_SIZE, INPUT_SIZE)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
-# ===================== 2. 模型管理器（支持多模型加载/切换） =====================
+# ===================== ROI提取模块 =====================
+class ROIExtractor:
+    """ROI提取器，支持center和yolo两种方式"""
+    
+    def __init__(self):
+        self.yolo_model = None
+    
+    def load_yolo(self):
+        """加载YOLOv8模型"""
+        if self.yolo_model is None and os.path.exists(YOLO_MODEL_PATH):
+            self.yolo_model = YOLO(YOLO_MODEL_PATH)
+            print(f"YOLOv8模型加载成功: {YOLO_MODEL_PATH}")
+        elif self.yolo_model is None:
+            print(f"警告: YOLOv8模型文件不存在: {YOLO_MODEL_PATH}，将使用center作为兜底")
+    
+    def extract_center(self, image: np.ndarray) -> np.ndarray:
+        """中心裁剪ROI提取"""
+        h, w = image.shape[:2]
+        center_x, center_y = w // 2, h // 2
+        size = min(w, h)
+        x1 = center_x - size // 2
+        y1 = center_y - size // 2
+        x2 = x1 + size
+        y2 = y1 + size
+        roi = image[y1:y2, x1:x2]
+        return roi
+    
+    def extract_yolo(self, image: np.ndarray) -> np.ndarray:
+        """YOLOv8检测ROI提取"""
+        self.load_yolo()
+        
+        if self.yolo_model is None:
+            return self.extract_center(image)
+        
+        try:
+            results = self.yolo_model(image, verbose=False)
+            boxes = results[0].boxes
+            
+            if boxes is None or len(boxes) == 0:
+                return self.extract_center(image)
+            
+            # 获取置信度最高的检测框
+            best_box = boxes[boxes.conf.argmax()]
+            x1, y1, x2, y2 = map(int, best_box.xyxy[0].tolist())
+            
+            # 确保边界在图像范围内
+            h, w = image.shape[:2]
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w, x2), min(h, y2)
+            
+            roi = image[y1:y2, x1:x2]
+            
+            if roi.size == 0:
+                return self.extract_center(image)
+            
+            return roi
+        except Exception as e:
+            print(f"YOLO提取失败: {e}，使用center兜底")
+            return self.extract_center(image)
+    
+    def extract(self, image: np.ndarray, method: str = "center") -> np.ndarray:
+        """根据指定方法提取ROI"""
+        if method == "yolo":
+            return self.extract_yolo(image)
+        else:
+            return self.extract_center(image)
+
+# ===================== 模型管理器 =====================
 class ModelManager:
     def __init__(self):
         self.current_model = None
         self.current_model_name = None
-        # 各模型的GradCAM目标层配置
+        self.current_scene_type = None
         self.model_target_layers = {
             "resnet50": lambda model: [model.layer4[-1]],
-            "swin_transformer": lambda model: [model.features[-1]],  # Swin Transformer默认目标层
-            "convnext": lambda model: [model.features[-1]]           # ConvNeXt默认目标层
+            "convnext": lambda model: [model.stages[-1][-1]]
         }
 
-    def load_model(self, model_name: str):
-        """加载指定模型的权重"""
-        if model_name == self.current_model_name and self.current_model is not None:
-            return self.current_model  # 避免重复加载
+    def load_model(self, model_key: str, scene_type: str):
+        """加载指定模型的权重
+        
+        Args:
+            model_key: 模型名称 (resnet50/convnext)
+            scene_type: 场景类型 (simple/complex)
+        """
+        full_key = f"{scene_type}_{model_key}"
+        
+        if full_key == self.current_model_name and self.current_model is not None:
+            return self.current_model
 
-        # 1. 初始化对应模型
-        if model_name == "resnet50":
+        # 初始化对应模型
+        num_classes = CLASS_CONFIG[scene_type]["num_classes"]
+        
+        if model_key == "resnet50":
             model = models.resnet50(weights=None)
-            model.fc = torch.nn.Linear(model.fc.in_features, NUM_CLASSES)
-        elif model_name == "swin_transformer":
-            model = models.swin_transformer.swin_t(weights=None)  # 可替换为swin_s/m/l
-            model.head = torch.nn.Linear(model.head.in_features, NUM_CLASSES)
-        elif model_name == "convnext":
-            model = models.convnext_tiny(weights=None)  # 可替换为small/large
-            model.classifier[-1] = torch.nn.Linear(model.classifier[-1].in_features, NUM_CLASSES)
+            model.fc = torch.nn.Linear(model.fc.in_features, num_classes)
+        elif model_key == "convnext":
+            model = convnext_tiny(num_classes=num_classes)
         else:
-            raise ValueError(f"不支持的模型：{model_name}")
+            raise ValueError(f"不支持的模型：{model_key}")
 
-        # 2. 加载权重
-        weight_path = MODEL_PATHS[model_name]
-        if not os.path.exists(weight_path):
-            raise FileNotFoundError(f"模型权重文件不存在：{weight_path}")
-        
-        checkpoint = torch.load(weight_path, map_location=DEVICE)
-        state_dict = checkpoint.get("model_state_dict", checkpoint)
-        # 移除多卡训练的module.前缀
-        new_state_dict = {k[7:] if k.startswith("module.") else k: v for k, v in state_dict.items()}
-        model.load_state_dict(new_state_dict, strict=False)
-        
-        # 3. 模型配置
+        # 加载权重
+        weight_path = MODEL_PATHS.get(full_key)
+        if weight_path and os.path.exists(weight_path):
+            checkpoint = torch.load(weight_path, map_location=DEVICE)
+            state_dict = checkpoint.get("model_state_dict", checkpoint)
+            new_state_dict = {k[7:] if k.startswith("module.") else k: v for k, v in state_dict.items()}
+            model.load_state_dict(new_state_dict, strict=False)
+            print(f"成功加载权重: {weight_path}")
+        else:
+            print(f"警告: 权重文件不存在 {weight_path}，使用随机初始化权重")
+
+        # 模型配置
         model.to(DEVICE)
         model.eval()
         
-        # 4. 更新当前模型
+        # 更新当前模型
         self.current_model = model
-        self.current_model_name = model_name
-        print(f"✅ 成功加载模型：{model_name} (权重路径：{weight_path})")
+        self.current_model_name = full_key
+        self.current_scene_type = scene_type
+        print(f"成功加载模型：{full_key}")
         return model
 
-    def predict(self, model_name: str, input_img: np.ndarray):
-        """核心预测逻辑（含GradCAM，优化热力图尺寸适配）"""
-        # 1. 加载模型
-        model = self.load_model(model_name)
+    def predict(self, model_key: str, scene_type: str, input_img: np.ndarray, roi_method: str = "center"):
+        """核心预测逻辑（含GradCAM和ROI提取）"""
+        perf_metrics = {}
         
-        # 2. 保存原图尺寸（用于热力图适配）
-        original_h, original_w = input_img.shape[:2]
+        # 载模型
+        start_time = time.time()
+        model = self.load_model(model_key, scene_type)
+        perf_metrics['model_load_time'] = time.time() - start_time
         
-        # 3. 图像预处理
-        img_pil = Image.fromarray(input_img.astype('uint8'), 'RGB')
+        # ROI提取
+        roi_extractor = ROIExtractor()
+        start_time = time.time()
+        roi_img = roi_extractor.extract(input_img, roi_method)
+        perf_metrics['roi_extract_time'] = time.time() - start_time
+        
+        # 保存原图尺寸（用于热力图适配）
+        original_h, original_w = roi_img.shape[:2]
+        
+        # 图像预处理
+        img_pil = Image.fromarray(roi_img.astype('uint8'), 'RGB')
         input_tensor = TRANSFORM(img_pil).unsqueeze(0).to(DEVICE)
         
-        # 4. 推理获取Top5结果
+        # 推理获取Top5结果
+        start_time = time.time()
         with torch.no_grad():
             outputs = model(input_tensor)
             probs = F.softmax(outputs, dim=1)[0]
         top5_prob, top5_catid = torch.topk(probs, 5)
-        results = {CLASSES[top5_catid[i]]: float(top5_prob[i]) for i in range(5)}
+        perf_metrics['inference_time'] = time.time() - start_time
         
-        # 5. 生成GradCAM热力图（优化尺寸适配）
-        target_layers = self.model_target_layers[model_name](model)
+        classes = get_classes(scene_type)
+        results = {classes[top5_catid[i]]: float(top5_prob[i]) for i in range(5)}
+        
+        # 生成GradCAM热力图
+        start_time = time.time()
+        target_layers = self.model_target_layers[model_key](model)
         cam = GradCAM(model=model, target_layers=target_layers)
         targets = [ClassifierOutputTarget(top5_catid[0].item())]
         grayscale_cam = cam(input_tensor=input_tensor, targets=targets)[0, :]
+        perf_metrics['gradcam_time'] = time.time() - start_time
         
-        # 6. 热力图叠加到原图（关键：适配原图尺寸，而非固定224x224）
-        img_float = np.float32(img_pil) / 255  # 不缩放原图，保持原始尺寸
-        # 调整热力图尺寸到原图尺寸
+        # 热力图叠加到ROI图
+        img_float = np.float32(img_pil) / 255
         grayscale_cam_resized = cv2.resize(grayscale_cam, (original_w, original_h))
         cam_image = show_cam_on_image(img_float, grayscale_cam_resized, use_rgb=True)
         
-        return results, cam_image
+        perf_metrics['total_time'] = sum(perf_metrics.values())
+        
+        return results, cam_image, roi_img, perf_metrics
 
 # 初始化模型管理器
 model_manager = ModelManager()
 
-# ===================== 3. FastAPI 接口实现 =====================
-app = FastAPI(title="叶片识别API", description="支持ResNet50/Swin Transformer/ConvNeXt的叶片分类接口")
+# ===================== FastAPI 接口实现 =====================
+app = FastAPI(title="叶片识别API", description="支持多场景多模型的叶片分类接口")
 
 @app.post("/predict", summary="叶片分类预测接口")
 async def api_predict(
     file: UploadFile = File(description="上传叶片图像文件（jpg/png格式）"),
-    model_name: str = "resnet50"  # 默认使用resnet50
+    model_name: str = "resnet50",
+    scene_type: str = "complex",
+    roi_method: str = "center"
 ):
     """
-    FastAPI预测接口：接收图片文件和模型名称，返回Top5预测结果
+    FastAPI预测接口：接收图片文件、模型名称、场景类型和ROI方法，返回Top5预测结果
     调用示例（curl）：
-    curl -X POST "http://localhost:8000/predict?model_name=resnet50" -F "file=@test.jpg"
+    curl -X POST "http://localhost:8000/predict?model_name=resnet50&scene_type=complex&roi_method=center" -F "file=@test.jpg"
     """
-    # 1. 校验参数
-    if model_name not in MODEL_PATHS.keys():
-        raise HTTPException(status_code=400, detail=f"不支持的模型：{model_name}，可选值：{list(MODEL_PATHS.keys())}")
+    # 校验参数
+    valid_models = ["resnet50", "convnext"]
+    valid_scenes = ["simple", "complex"]
+    valid_roi_methods = ["center", "yolo"]
     
-    # 2. 读取图片
+    if model_name not in valid_models:
+        raise HTTPException(status_code=400, detail=f"不支持的模型：{model_name}，可选值：{valid_models}")
+    if scene_type not in valid_scenes:
+        raise HTTPException(status_code=400, detail=f"不支持的场景类型：{scene_type}，可选值：{valid_scenes}")
+    if roi_method not in valid_roi_methods:
+        raise HTTPException(status_code=400, detail=f"不支持的ROI方法：{roi_method}，可选值：{valid_roi_methods}")
+    
+    # 读取图片
     try:
         contents = await file.read()
         img_pil = Image.open(BytesIO(contents)).convert("RGB")
@@ -153,164 +287,172 @@ async def api_predict(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"图片解析失败：{str(e)}")
     
-    # 3. 预测
+    # 预测
     try:
-        results, _ = model_manager.predict(model_name, input_img)
+        results, _, roi_img, perf_metrics = model_manager.predict(model_name, scene_type, input_img, roi_method)
         return JSONResponse(content={
             "code": 200,
             "msg": "预测成功",
             "data": {
                 "model_name": model_name,
-                "top5_results": results
+                "scene_type": scene_type,
+                "roi_method": roi_method,
+                "top5_results": results,
+                "performance_metrics": {
+                    "model_load_time_ms": round(perf_metrics['model_load_time'] * 1000, 2),
+                    "roi_extract_time_ms": round(perf_metrics['roi_extract_time'] * 1000, 2),
+                    "inference_time_ms": round(perf_metrics['inference_time'] * 1000, 2),
+                    "gradcam_time_ms": round(perf_metrics['gradcam_time'] * 1000, 2),
+                    "total_time_ms": round(perf_metrics['total_time'] * 1000, 2)
+                }
             }
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"预测失败：{str(e)}")
 
-# ===================== 4. Gradio 界面（修复状态更新 + 热力图适配） =====================
-def update_status(text):
-    """辅助函数：更新状态文本"""
-    return gr.update(value=text)
-
-def gradio_predict(model_name: str, input_img: np.ndarray, status_box):
-    """Gradio专用预测函数（修复状态更新逻辑）"""
+# ===================== Gradio 界面设计 =====================
+def gradio_predict(scene_type: str, model_name: str, roi_method: str, input_img: np.ndarray):
     if input_img is None:
-        status_box = update_status("未加载模型")
-        return gr.update(), gr.update(), status_box
+        return {}, None, None, "未加载模型"
     
     try:
-        # 第一步：更新状态为加载模型
-        status_box = update_status(f"正在加载 {model_name} 模型...")
-        yield gr.update(), gr.update(), status_box
+        results, cam_image, roi_img, perf_metrics = model_manager.predict(model_name, scene_type, input_img, roi_method)
         
-        # 第二步：加载模型并更新状态
-        model = model_manager.load_model(model_name)
-        status_box = update_status(f"{model_name} 模型加载完成，正在推理...")
-        yield gr.update(), gr.update(), status_box
+        perf_info = (
+            f"{model_name}推理完成！（ROI方法：{roi_method}）\n"
+            f"性能指标：模型加载 {perf_metrics['model_load_time']*1000:.1f}ms | "
+            f"ROI提取 {perf_metrics['roi_extract_time']*1000:.1f}ms | "
+            f"推理 {perf_metrics['inference_time']*1000:.1f}ms | "
+            f"GradCAM {perf_metrics['gradcam_time']*1000:.1f}ms | "
+            f"总计 {perf_metrics['total_time']*1000:.1f}ms"
+        )
         
-        # 第三步：执行预测（含优化后的热力图）
-        results, cam_image = model_manager.predict(model_name, input_img)
-        status_box = update_status(f"{model_name} 推理完成！")
-        yield results, cam_image, status_box
+        return results, cam_image, roi_img, perf_info
         
     except Exception as e:
-        error_msg = f"预测失败：{str(e)}"
-        gr.Warning(error_msg)
-        status_box = update_status(error_msg)
-        yield {}, None, status_box
+        return {}, None, None, f"预测失败：{str(e)}"
 
-# 构建优化后的Gradio界面
-with gr.Blocks(
-    title="叶片识别系统",
-    theme=gr.themes.Soft(
-        primary_hue="green",  # 适配植物主题
-        secondary_hue="blue",
-        neutral_hue="gray"
-    )
-) as demo:
-    # 顶部标题区
+with gr.Blocks(title="叶片识别系统") as demo:
     gr.Markdown("""
     # 🌿 叶片识别系统
-    基于深度学习的叶片物种分类工具，支持ResNet50/Swin Transformer/ConvNeXt三种模型，
-    可可视化模型关注区域（Grad-CAM热力图）。
+    基于深度学习的叶片物种分类工具，支持多场景（单一背景/复杂背景）、多模型（ResNet50/LeafConvNeXt）、多ROI提取方式（Center/YOLO）。
     """)
     
-    # 核心交互区（分栏布局）
     with gr.Row(equal_height=True):
-        # 左侧：输入与配置区
         with gr.Column(scale=1, min_width=350):
             gr.Markdown("### 📥 输入配置")
             input_img = gr.Image(
                 label="上传叶片图像",
                 type="numpy",
-                height=350,  # 统一输入图高度
-                image_mode="RGB",
-                sources=["upload", "webcam"],  # 支持上传/摄像头
+                height=350,
+                sources=["upload", "webcam"],
                 interactive=True,
                 elem_id="input-image"
             )
+            
+            scene_selector = gr.Dropdown(
+                label="选择场景类型",
+                choices=[
+                    ("复杂背景（9类）", "complex"),
+                    ("单一背景（185类）", "simple")
+                ],
+                value="complex",
+                interactive=True,
+                info="选择训练数据集的场景类型"
+            )
+            
             model_selector = gr.Dropdown(
                 label="选择推理模型",
-                choices=list(MODEL_PATHS.keys()),
+                choices=[
+                    ("ResNet50", "resnet50"),
+                    ("LeafConvNeXt", "convnext")
+                ],
                 value="resnet50",
                 interactive=True,
                 info="不同模型精度/速度不同，可按需选择"
             )
+            
+            roi_selector = gr.Dropdown(
+                label="选择ROI提取方法",
+                choices=[
+                    ("中心裁剪（默认）", "center"),
+                    ("YOLOv8检测", "yolo")
+                ],
+                value="center",
+                interactive=True,
+                info="复杂背景场景推荐使用YOLOv8提取ROI"
+            )
+            
             predict_btn = gr.Button(
                 "开始识别",
                 variant="primary",
-                size="lg",
-                icon="✅"
+                size="lg"
             )
-            # 模型加载状态提示（修复更新问题）
+            
             status_text = gr.Textbox(
                 label="模型状态",
                 value="未加载模型",
                 interactive=False,
                 placeholder="模型加载中...",
-                lines=2,  # 增加行数，避免文字截断
+                lines=2,
                 elem_id="status-box"
             )
         
-        # 右侧：输出展示区
         with gr.Column(scale=2, min_width=600):
             gr.Markdown("### 📊 预测结果")
             with gr.Row(equal_height=True):
-                # 左子列：Top5结果
                 with gr.Column(scale=1):
                     label_output = gr.Label(
                         num_top_classes=5,
-                        label="Top5 物种预测",
-                        height=350,  # 与输入图高度一致
-                        elem_id="label-result"
+                        label="Top5 物种预测"
                     )
-                # 右子列：GradCAM热力图（优化显示）
                 with gr.Column(scale=1):
                     cam_output = gr.Image(
-                        label="Grad-CAM 热力图（模型关注区域）",
+                        label="Grad-CAM 热力图",
                         type="numpy",
-                        height=350,  # 与输入图高度一致
-                        interactive=False,
-                        elem_id="cam-image",
-                        # 关键：让热力图自适应容器，保持比例
-                        image_mode="RGB",
-                        show_download_button=True,
-                        container=True
+                        height=350,
+                        interactive=False
                     )
+            
+            gr.Markdown("### 🔍 ROI提取结果")
+            roi_output = gr.Image(
+                label="提取的ROI区域",
+                type="numpy",
+                height=250,
+                interactive=False
+            )
     
-    # 底部说明区
     gr.Markdown("""
     > ⚠️ 注意：
     > 1. 上传图像建议为清晰的叶片特写，分辨率不低于224x224；
     > 2. 首次选择模型会加载权重，耗时稍长（约10-30秒）；
-    > 3. API接口地址：`http://localhost:8000/predict`（支持curl/postman调用）。
+    > 3. YOLOv8 ROI提取需要预训练的检测模型，若不存在则自动降级为中心裁剪；
+    > 4. API接口地址：`http://localhost:8000/predict`（支持curl/postman调用）。
     """)
     
-    # 事件绑定（修复状态更新逻辑）
-    # 模型选择切换时更新状态
-    @model_selector.change
-    def update_model_status(model_name):
-        return f"已选择模型：{model_name}（点击“开始识别”加载）"
-    
-    # 点击预测按钮执行推理（使用yield实现分步更新）
     predict_btn.click(
         fn=gradio_predict,
-        inputs=[model_selector, input_img, status_text],
-        outputs=[label_output, cam_output, status_text],
-        # 启用流式输出，实现状态分步更新
-        stream=True
+        inputs=[scene_selector, model_selector, roi_selector, input_img],
+        outputs=[label_output, cam_output, roi_output, status_text]
     )
 
-# ===================== 5. 挂载Gradio到FastAPI + 启动服务 =====================
-# 将Gradio应用挂载到FastAPI的根路径
+# ===================== 挂载Gradio到FastAPI + 启动服务 =====================
 app = gr.mount_gradio_app(app, demo, path="/")
 
 if __name__ == "__main__":
-    # 启动FastAPI服务（同时包含Gradio界面）
+    # # 方式1 使用Gradio内置share功能(生成公网链接,有效期72小时)
+    # demo.launch(
+    #     server_name="0.0.0.0",
+    #     server_port=8000,
+    #     share=True,  # 开启公网分享
+    #     show_error=True
+    # )
+    
+    # 方式2 使用uvicorn(仅本地访问)
     uvicorn.run(
         "web_app:app",
-        host="0.0.0.0",  # 允许局域网访问
+        host="0.0.0.0",
         port=8000,
-        reload=True,  # 开发模式热重载（生产环境关闭）
+        reload=True,
         log_level="info"
     )

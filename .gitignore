@@ -5,16 +5,25 @@ __MACOSX/
 # leafsnap-dataset-images.csv
 leafsnap-dataset-images.txt
 leafsnap-dataset-readme.txt
+.trae/
+毕设文章/
 毕设文档.md
 logs/
 pretrain_weights/
-results/
 .ipynb_checkpoints/
 *.h5
 *.json
 *.pem
 leafsnap-dataset-train-images.csv
 leafsnap-dataset-test-images.csv
+.skill/
+.research-skill/
+.academic-paper-skill/
+.vscode/
+.uploads/
+.gradio/
+.pytest_cache/
+
 *.pyc
 *.tar
 *.pth

@@ -16,12 +16,12 @@ class Logger:
         self.file.flush()
 
 def setup_logger(cfg,log_dir="logs"):
-    # 创建logs目录（不存在则创建）
+    # 创建logs目录
     log_path = Path(log_dir)
     log_path.mkdir(exist_ok=True)
-    # 日志文件名（按时间命名，避免覆盖）
+    # 日志文件名
     log_file = log_path / f"{cfg.logger.model_name}_train_log_{time.strftime('%Y%m%d_%H%M%S')}.txt"
-    # 重定向stdout到文件（同时打印到控制台和文件）
+    # 重定向stdout到文件
     sys.stdout = Logger(log_file)
     print(f"[INFO] Log will be saved to {log_file}")
     print("\n===== CONFIG =====")

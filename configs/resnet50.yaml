@@ -1,6 +1,6 @@
 dataset:
   input_size: 224
-  batch_size: 32
+  batch_size: 48
   limit_train_per_class: 0
   limit_val_per_class: 0
 
@@ -9,26 +9,33 @@ model:
 
 train:
   epochs_stage1: 10
-  epochs_stage2: 25
-  grad_clip: 1.0
-  
+  epochs_stage2: 20
+  grad_clip: 0.8
+
 criterion:
-  label_smoothing: 0.15  
+  label_smoothing: 0.18
 
 optimizer:
-  lr_stage1: 0.001
-  lr_stage2: 0.0001
+  lr_stage1: 0.0006
+  lr_stage2: 5e-5
   beta1: 0.9
   beta2: 0.999
   eps: 1e-8
-  weight_decay: 0.004
+  weight_decay: 0.018
 
 early_stop:
-  patience: 3
-  min_delta: 0.001
+  patience: 5
+  min_delta: 0.002
 
 scheduler:
   mode: "max"
   factor: 0.5
-  patience: 1
-  min_lr: 1e-6
+  patience: 2
+  min_lr: 5e-7
+  cosin:
+    warmup_epochs: 3
+    warmup_lr_init: 1e-6
+    min_lr: 5e-6
+
+logger:
+  model_name: "resnet50"

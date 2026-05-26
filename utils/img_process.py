@@ -12,40 +12,58 @@ _yolo_model = None
 def get_yolo_model():
     global _yolo_model
     if _yolo_model is None:
+        project_root = Path(__file__).resolve().parents[1]
+        candidate_weights = [
+            project_root / "results" / "yolov8n_leaf_roi_best.pt",
+            project_root / "results" / "yolo_roi" / "yolov8n_seg_leaf" / "weights" / "best.pt",
+            project_root / "yolov8n-seg.pt",
+            project_root / "yolov8n.pt",
+        ]
         try:
-            _yolo_model = YOLO('../yolov8n.pt')
+            for w in candidate_weights:
+                if w.exists():
+                    _yolo_model = YOLO(str(w))
+                    print(f"[INFO] 使用YOLO权重: {w}")
+                    break
+            if _yolo_model is None:
+                _yolo_model = YOLO("../yolov8n-seg.pt")
+                print("[INFO] 使用默认YOLO权重: yolov8n-seg.pt")
         except Exception as e:
             print(f"[WARNING] 加载 YOLO 模型失败: {e}")
     return _yolo_model
 
-def hybrid_roi_extraction(image_rgb, image_path=None):
-    """处理复杂背景、无segment的图片，提取ROI"""
+def hybrid_roi_extraction(image_rgb, image_path=None, use_yolo=False):
+    """处理复杂背景、无segment的图片，提取ROI
+       use_yolo: 是否强制使用 YOLO 模型。如果 False 则直接使用兜底方案。
+    """
     h, w = image_rgb.shape[:2]
-    # 因为主要是做识别 所以目标检测这里先简化处理
-    # # 尝试 YOLO
-    # model = get_yolo_model()
-    # if model is not None:
-    #     try:
-    #         # 如果提供了路径，直接用路径推理（更快）；否则用内存图像
-    #         source = image_path if image_path else image_rgb
-    #         results = model(source, conf=0.25, verbose=False)
-            
-    #         if results[0].masks is not None and len(results[0].masks) > 0:
-    #             mask = results[0].masks.data[0].cpu().numpy()
-    #             mask = cv2.resize(mask, (w, h))
-    #             mask_binary = (mask > 0.5).astype(np.uint8) * 255
-                
-    #             # 抠图（背景变黑）
-    #             cutout = cv2.bitwise_and(image_rgb, image_rgb, mask=mask_binary)
-                
-    #             # 获取边界框并裁剪
-    #             box = results[0].boxes[0].xyxy[0].cpu().numpy()
-    #             x1, y1, x2, y2 = map(int, box)
-    #             pad = 20
-    #             roi = cutout[max(0, y1-pad):min(h, y2+pad), max(0, x1-pad):min(w, x2+pad)]
-    #             return roi
-    #     except Exception as e:
-    #         print(f"[DEBUG] YOLO 提取失败: {e}，将使用兜底方案")
+
+    if use_yolo:
+        model = get_yolo_model()
+        if model is not None:
+            try:
+                source = image_path if image_path else image_rgb
+                results = model(source, conf=0.5, verbose=False)
+
+                if results[0].boxes is not None and len(results[0].boxes) > 0:
+                    conf_idx = int(results[0].boxes.conf.argmax().item())
+                    box = results[0].boxes[conf_idx].xyxy[0].cpu().numpy()
+                    x1, y1, x2, y2 = map(int, box)
+
+                    roi_area = (x2 - x1) * (y2 - y1)
+                    img_area = h * w
+
+                    if roi_area > 0.05 * img_area and roi_area < 0.95 * img_area:
+                        pad = max(30, int(0.12 * min(w, h)))
+                        x1 = max(0, x1 - pad)
+                        y1 = max(0, y1 - pad)
+                        x2 = min(w, x2 + pad)
+                        y2 = min(h, y2 + pad)
+                        roi = image_rgb[y1:y2, x1:x2]
+                        if roi is not None and roi.size > 0:
+                            return roi
+            except Exception as e:
+                print(f"[DEBUG] YOLO 提取失败: {e}，将使用兜底方案")
 
     # 兜底方案：1/6-5/6 比例裁剪
     y1, x1 = int(h / 6), int(w / 6)

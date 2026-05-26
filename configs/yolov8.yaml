@@ -1,0 +1,54 @@
+dataset:
+  root: "dataset/leaf_roi_seg"
+  data_yaml: "dataset/leaf_roi_seg/data.yaml"
+
+model:
+  weights: "pretrain_weights/yolov8n.pt"
+  task: "detect"
+
+train:
+  imgsz: 640
+  batch: 16
+  workers: 4
+  project: "results/yolo_roi"
+  name: "yolov8n_leaf_roi"
+  save_period: 10
+  seed: 42
+  copy_best_to: "results/yolov8n_leaf_roi_best.pt"
+  normalize_label_ids: true
+  single_cls: true
+  hsv_h: 0.02
+  hsv_s: 0.6
+  hsv_v: 0.4
+  degrees: 7.0
+  translate: 0.08
+  scale: 0.25
+  shear: 2.0
+  perspective: 0.0
+  flipud: 0.0
+  fliplr: 0.5
+  mosaic: 0.2
+  mixup: 0.05
+  close_mosaic: 8
+  cos_lr: true
+  amp: true
+
+stage1:
+  epochs: 30
+  patience: 8
+  freeze: 12
+  lr0: 0.006
+  lrf: 0.08
+  optimizer: "AdamW"
+  weight_decay: 0.0008
+  warmup_epochs: 3
+
+stage2:
+  epochs: 20
+  patience: 6
+  freeze: 0
+  lr0: 0.0015
+  lrf: 0.12
+  optimizer: "AdamW"
+  weight_decay: 0.0012
+  warmup_epochs: 2
